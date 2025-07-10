@@ -6,165 +6,189 @@ import chardet
 from io import BytesIO
 import requests
 
-# --- Your Gemini API Key ---
+# --- Gemini API Setup ---
 GEMINI_API_KEY = "AIzaSyD9DfnqPz7vMgh5aUHaMAVjeJbg20VZMvU"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-
 # --- Load CSV or Excel Smartly ---
 def load_data_smart(file):
-    file_name = file.name.lower()
     try:
         raw = file.read()
-        if file_name.endswith(".csv"):
-            detected = chardet.detect(raw)
-            encoding = detected["encoding"] or "ISO-8859-1"
+        if file.name.endswith(".csv"):
+            encoding = chardet.detect(raw)["encoding"] or "ISO-8859-1"
             return pd.read_csv(BytesIO(raw), encoding=encoding)
-        elif file_name.endswith(".xlsx"):
+        elif file.name.endswith(".xlsx"):
             return pd.read_excel(BytesIO(raw), engine="openpyxl")
         else:
-            st.error("Unsupported file format. Upload a CSV or Excel (.xlsx) file.")
+            st.error("Unsupported file format. Upload CSV or Excel.")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error reading file: {e}")
         return pd.DataFrame()
 
-
-# --- Call Gemini REST API ---
+# --- Ask Gemini API ---
 def ask_llm(prompt):
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": GEMINI_API_KEY
     }
     body = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ]
+        "contents": [{"parts": [{"text": prompt}]}]
     }
     try:
         response = requests.post(GEMINI_URL, headers=headers, json=body)
         response.raise_for_status()
         result = response.json()
-
-        # DEBUG: show raw output
-        st.code(json.dumps(result, indent=2), language="json")
-
         return result["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        return f"❌ Gemini Error: {e}"
+        return f"\u274c Gemini Error: {e}"
 
-# --- Chart Generator using Gemini ---
-# --- Chart Generator using Gemini ---
-def get_chart_recommendations(df):
-    preview = df.head(10).to_string(index=False)
+# --- Generate Business Insights ---
+def get_insights_list(df):
+    preview = df.head(15).to_string(index=False)
     prompt = f"""
-You are a data visualization expert.
+You are a McKinsey-Partner level business consultant.
+List down all the insights then what measure we should take then check doability and possible outcome from it and then sort it in manner like highest impact with highest doability first.
+while giving insights make sure to consider average and total carefully some time sum, average and median all can give differnt insights but it is your duty to understand which is most appropriate to use.
+You can follow following structure because for every business main issue will be profitability:
+1. Profit is made of Revenue and cost so analyze that at high level.
+2. Dig deeper into these things and understand what is causing problem (Root cause analysis)
+3. Build hypothesis for solution and then after checking them
+4. Give insights
 
-Given the following table:
-{preview}
+In insights also, after giving decision tell how can they do like dig deeper into the insights and give lowest level detail and step
 
-Suggest 2–3 useful charts. For each chart, include:
-1. Chart Type (bar, line, pie, scatter, etc.)
-2. X-axis and Y-axis columns
-3. A short Chart Title
-4. One-sentence business insight about why this chart is useful.
 
-Format your answer as a JSON list like this:
+Based on the dataset below, give 3-5 insights as JSON with:
+- decision
+- observation
+- why_it_matters
+- action
+- impact (with numbers)
+try to add numbers in insights title.
+Avoid long sentences. JSON format:
 [
   {{
-    "chart_type": "bar",
-    "x": "Category",
-    "y": "Profit",
-    "title": "Profit by Category",
-    "insight": "Helps identify most profitable segments"
+    "decision": "...",
+    "observation": "...",
+    "why_it_matters": "...",
+    "action": "...",
+    "impact": "..."
   }}
 ]
+
+Data:
+{preview}
 """
-    raw_response = ask_llm(prompt)
-
-    # ✅ Clean Markdown formatting if present
-    if "```json" in raw_response:
-        raw_response = raw_response.split("```json")[-1]
-    if "```" in raw_response:
-        raw_response = raw_response.split("```")[0]
-
+    raw = ask_llm(prompt)
+    raw = raw.split("```json")[-1].split("```")[0] if "```" in raw else raw
     try:
-        return json.loads(raw_response)
+        return json.loads(raw)
     except Exception as e:
-        st.warning(f"⚠️ JSON parse failed: {e}")
+        st.warning(f"\u26a0\ufe0f Failed to parse insights JSON: {e}")
         return []
+
+# --- Recommend a Chart for Each Insight ---
+def get_chart_spec_from_insight(df, insight_text):
+    column_list = ", ".join(df.columns.tolist())
+    prompt = f"""
+You are a data visualization expert who know all type of visualizations and know how to show the insights in best possible way.
+while giving graph, make sure that, that particular graph shows what is stated in the insights.
+Make sure to that you show particular things which are mentioned in insights.
+
+please please and please decide which graph to show based in action part of insights text or the text I will give below.
+Dataset Columns: {column_list}
+
+Given this business insight:
+\"{insight_text}\"
+
+Return a JSON with:
+{{
+  "chart_type": "bar" or "scatter" or "line" or "pie",
+  "x": "column_name",
+  "y": "column_name or derived column (e.g., average profit per order)",
+  "title": "Descriptive title"
+}}
+
+Important:
+- Use averages or ratios instead of raw totals when comparing groups like 'Ship Mode', 'Region', or 'Segment'.
+- For example, prefer "average profit per order" instead of total profit if some categories have fewer records.
+- Always try to normalize for number of orders or sales volume to avoid misleading comparisons.
+- decide which graph to show based in action part of insights text or the text I gave.
+Only use column names that exist in the dataset or can be derived from it.
+Return only the JSON.
+
+Only use column names from the dataset. Return nothing else.
+"""
+    response = ask_llm(prompt)
+    try:
+        if "```json" in response:
+            response = response.split("```json")[-1]
+        if "```" in response:
+            response = response.split("```")[0]
+        return json.loads(response)
+    except Exception as e:
+        st.warning(f"⚠️ Failed to parse chart spec: {e}")
+        return None
+
 
 # --- Generate Plotly Chart ---
 def generate_chart(df, spec):
     try:
-        chart_type = spec["chart_type"].lower()
-        x = spec["x"]
-        y = spec["y"]
+        chart_type, x, y = spec["chart_type"].lower(), spec["x"], spec["y"]
         title = spec.get("title", "Chart")
+
+        df = df[[x, y]].dropna()
+        df = df.groupby(x)[y].sum().reset_index()
+        df = df.sort_values(by=y, ascending=False).head(10)
+
         if chart_type == "bar":
-            return px.bar(df, x=x, y=y, title=title)
+            fig = px.bar(df, x=x, y=y, title=title)
         elif chart_type == "line":
-            return px.line(df, x=x, y=y, title=title)
+            fig = px.line(df, x=x, y=y, title=title)
         elif chart_type == "scatter":
-            return px.scatter(df, x=x, y=y, title=title)
+            fig = px.scatter(df, x=x, y=y, title=title)
         elif chart_type == "pie":
-            return px.pie(df, names=x, values=y, title=title)
-    except:
+            fig = px.pie(df, names=x, values=y, title=title)
+        else:
+            return None
+
+        fig.update_layout(xaxis_tickangle=-45, margin=dict(l=40, r=40, t=60, b=120))
+        return fig
+    except Exception as e:
+        st.error(f"Chart error: {e}")
         return None
 
-
-# --- Insight Generator ---
-def get_insights(df):
-    preview = df.head(15).to_string(index=False)
-    prompt = f"""
-You are a Mckinsey level business strategy consultant.
-
-Based on the dataset below, return 3–5 actionable business insights. Each insight should include:
-- Decision
-- What you observed
-- Why it matters
-- What action the business should take
-- Possible Impact after implementation in terms of numbers 
-
-above all should be very crips and to the point avoid long sentences
-
-Data sample:
-{preview}
-
-Respond in numbered bullet points.
-"""
-    return ask_llm(prompt)
-
-
 # --- Streamlit UI ---
-st.set_page_config(page_title="🧠 AI Data Analyst (Gemini)", layout="wide")
-st.title("🤖 Gemini-Powered Data Analyst (via REST API)")
+st.set_page_config(page_title="\U0001f9e0 Insight-by-Insight Analyst", layout="wide")
+st.title("\U0001f916 Gemini-Powered Insight Visualizer")
 
-uploaded_file = st.file_uploader("📁 Upload CSV or Excel file", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("\U0001f4c1 Upload CSV or Excel", type=["csv", "xlsx"])
 
 if uploaded_file:
     df = load_data_smart(uploaded_file)
-
     if not df.empty:
-        st.subheader("📊 Data Preview")
+        st.subheader("\U0001f4c8 Data Preview")
         st.dataframe(df.head(20))
 
-        st.subheader("🔍 AI-Generated Insights")
+        st.subheader("\U0001f50d Insight-by-Insight Analysis")
         with st.spinner("Analyzing..."):
-            insights = get_insights(df)
-        st.markdown(insights)
+            insights = get_insights_list(df)
 
-        st.subheader("📈 Smart Chart Recommendations")
-        with st.spinner("Generating charts..."):
-            recs = get_chart_recommendations(df)
+        for i, ins in enumerate(insights):
+            st.markdown(f"### \U0001f52e Insight {i+1}: {ins.get('decision')}")
+            st.markdown(f"- **Observation:** {ins.get('observation')}")
+            st.markdown(f"- **Why it matters:** {ins.get('why_it_matters')}")
+            st.markdown(f"- **Action:** {ins.get('action')}")
+            st.markdown(f"- **Impact:** {ins.get('impact')}")
 
-        for rec in recs:
-            st.markdown(f"**{rec.get('title', '')}**")
-            st.caption(f"_Why: {rec.get('insight', '')}_")
-            fig = generate_chart(df, rec)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
+            with st.spinner("Generating chart..."):
+                spec = get_chart_spec_from_insight(df, ins.get("decision"))
+                if spec:
+                    fig = generate_chart(df, spec)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning("\u26a0\ufe0f Couldn't generate chart.")
+                else:
+                    st.warning("\u26a0\ufe0f No chart suggested.")
