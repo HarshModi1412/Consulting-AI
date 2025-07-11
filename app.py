@@ -56,7 +56,7 @@ You can follow following structure because for every business main issue will be
 3. Build hypothesis for solution and then after checking them
 4. Give insights
 
-In insights also, after giving decision tell how can they do like dig deeper into the insights and give lowest level detail and step
+In insights also, after giving decision tell how can they do like dig deeper into the insights and give lowest level detail and steps in how to 
 
 
 Based on the dataset below, give 3-5 insights as JSON with:
@@ -65,6 +65,7 @@ Based on the dataset below, give 3-5 insights as JSON with:
 - why_it_matters
 - action
 - impact (with numbers)
+- how to
 try to add numbers in insights title.
 Avoid long sentences. JSON format:
 [
@@ -74,6 +75,7 @@ Avoid long sentences. JSON format:
     "why_it_matters": "...",
     "action": "...",
     "impact": "..."
+    "How to": "..."
   }}
 ]
 
