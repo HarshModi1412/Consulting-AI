@@ -96,7 +96,8 @@ You are a data visualization expert who know all type of visualizations and know
 while giving graph, make sure that, that particular graph shows what is stated in the insights.
 Make sure to that you show particular things which are mentioned in insights.
 
-please please and please decide which graph to show based in action part of insights text or the text I will give below.
+please please and please decide which graph to show based in observation part of insights text or the text I will give below.
+decide X axis and Y axis very very carefully.
 Dataset Columns: {column_list}
 
 Given this business insight:
@@ -106,7 +107,7 @@ Return a JSON with:
 {{
   "chart_type": "bar" or "scatter" or "line" or "pie",
   "x": "column_name",
-  "y": "column_name or derived column (e.g., average profit per order)",
+  "y": "single column OR multiple columns for comparison (as a list if needed, e.g., ['Sales', 'Profit'])",
   "title": "Descriptive title"
 }}
 
@@ -133,31 +134,110 @@ Only use column names from the dataset. Return nothing else.
 
 
 # --- Generate Plotly Chart ---
+# --- Generate Plotly Chart ---
 def generate_chart(df, spec):
     try:
         chart_type, x, y = spec["chart_type"].lower(), spec["x"], spec["y"]
         title = spec.get("title", "Chart")
 
-        df = df[[x, y]].dropna()
-        df = df.groupby(x)[y].sum().reset_index()
-        df = df.sort_values(by=y, ascending=False).head(10)
+        # Handle derived columns
+        if isinstance(y, str) and "/" in y:
+            num_col, denom_col = [col.strip() for col in y.split("/")]
+            if num_col in df.columns and denom_col in df.columns:
+                df[y] = df[num_col] / df[denom_col]
+            else:
+                st.error(f"❌ One of the columns '{num_col}' or '{denom_col}' for derived y is missing.")
+                return None
 
+        if x not in df.columns and 'date' in x.lower():
+            try:
+                df[x] = pd.to_datetime(df[x], errors='coerce')
+                df = df.dropna(subset=[x])
+                df[x] = df[x].dt.to_period('M').dt.to_timestamp()
+            except Exception as e:
+                st.warning(f"⚠️ Failed to create derived date column '{x}': {e}")
+
+        if isinstance(y, str) and (x not in df.columns or y not in df.columns):
+            st.error(f"❌ Column '{x}' or '{y}' not in dataset.")
+            return None
+
+        df = df.dropna(subset=[x] + ([y] if isinstance(y, str) else y))
+
+        # Handle datetime properly if needed
+        if pd.api.types.is_datetime64_any_dtype(df[x]) or 'date' in x.lower():
+            try:
+                df[x] = pd.to_datetime(df[x], errors='coerce')
+                df = df.dropna(subset=[x])
+                df[x] = df[x].dt.to_period('M').dt.to_timestamp()
+            except Exception as e:
+                st.warning(f"⚠️ Failed to parse dates in '{x}': {e}")
+
+        # Try to detect color grouping column from title or actual values
+        color_col = None
+        title_lower = title.lower()
+        possible_groups = ['Category', 'Sub-Category', 'Segment', 'Region', 'State']
+        if any(kw in title_lower for kw in ['category', 'segment', 'region', 'state']):
+            for col in possible_groups:
+                if col in df.columns:
+                    color_col = col
+                    break
+
+        # Support multi-series explicitly defined in spec['y'] as a list
+        if isinstance(y, list):
+            df = df[[x] + y].copy()
+            df = df.dropna()
+            df = df.sort_values(by=x)
+            df_melted = df.melt(id_vars=x, value_vars=y, var_name="Series", value_name="Value")
+
+            if chart_type == "line":
+                fig = px.line(df_melted, x=x, y="Value", color="Series", title=title)
+            elif chart_type == "bar":
+                fig = px.bar(df_melted, x=x, y="Value", color="Series", title=title, barmode="group")
+            elif chart_type == "scatter":
+                fig = px.scatter(df_melted, x=x, y="Value", color="Series", title=title)
+            else:
+                st.warning("Multi-series not supported for this chart type.")
+                return None
+
+            fig.update_layout(xaxis_tickangle=-45, margin=dict(l=40, r=40, t=60, b=120), plot_bgcolor="rgba(0,0,0,0)")
+            return fig
+
+        # Group data properly
+        if chart_type == "pie":
+            df = df[[x, y]].copy()
+            df = df.groupby(x)[y].sum().reset_index()
+        elif color_col:
+            df = df[[x, y, color_col]].copy()
+            df = df.groupby([x, color_col])[y].sum().reset_index()
+        else:
+            df = df[[x, y]].copy()
+            df = df.groupby(x)[y].sum().reset_index()
+
+        df = df.sort_values(by=x)
+
+        # Plot based on chart type
         if chart_type == "bar":
-            fig = px.bar(df, x=x, y=y, title=title)
+            fig = px.bar(df, x=x, y=y, color=color_col, title=title)
         elif chart_type == "line":
-            fig = px.line(df, x=x, y=y, title=title)
+            fig = px.line(df, x=x, y=y, color=color_col, title=title)
         elif chart_type == "scatter":
-            fig = px.scatter(df, x=x, y=y, title=title)
+            fig = px.scatter(df, x=x, y=y, color=color_col, title=title)
         elif chart_type == "pie":
             fig = px.pie(df, names=x, values=y, title=title)
         else:
+            st.warning("Unsupported chart type.")
             return None
 
-        fig.update_layout(xaxis_tickangle=-45, margin=dict(l=40, r=40, t=60, b=120))
+        fig.update_layout(
+            xaxis_tickangle=-45,
+            margin=dict(l=40, r=40, t=60, b=120),
+            plot_bgcolor="rgba(0,0,0,0)"
+        )
         return fig
     except Exception as e:
         st.error(f"Chart error: {e}")
         return None
+
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="\U0001f9e0 Insight-by-Insight Analyst", layout="wide")
